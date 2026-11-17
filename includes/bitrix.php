@@ -33,6 +33,12 @@ function sendLeadToBitrix(array $lead): array
             ]
         ],
         'COMMENTS' => $lead['comment'],
+        'UF_CRM_1794927539' => match ($lead['priority'] ?? 'normal') {
+            'low' => '44',
+            'normal' => '46',
+            'high' => '48',
+            default => '46'
+        },
     ];
 
     try {

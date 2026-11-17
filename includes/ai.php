@@ -3,72 +3,81 @@
 
 require_once __DIR__ . '/env.php';
 
+/**
+ * Определяет приоритет заявки через YandexGPT.
+ */
 function analyzeLeadPriority(string $comment): string
 {
-    $apiKey = getenv('GEMINI_API_KEY');
-
-    if (!$apiKey || trim($comment) === '') {
+    if (trim($comment) === '') {
         return 'normal';
     }
 
-    $url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent';
+    $apiKey = getenv('YANDEX_API_KEY');
+    $folderId = getenv('YANDEX_FOLDER_ID');
+    $model = getenv('YANDEX_MODEL');
 
-    $prompt = <<<PROMPT
-Проанализируй текст заявки клиента и определи её приоритет.
+    if (!$apiKey || !$folderId || !$model) {
+        error_log('Yandex AI: Missing configuration.');
+        return 'normal';
+    }
 
-Правила:
-- high — срочная заявка, высокая заинтересованность или важная задача.
-- normal — обычный запрос на услугу или консультацию.
-- low — слабая заинтересованность, общий вопрос или отсутствие конкретной задачи.
+    $apiUrl = 'https://ai.api.cloud.yandex.net/v1/chat/completions';
 
-Верни только JSON следующего формата:
-{"priority":"low"}
+    $systemPrompt = <<<'PROMPT'
+Ты — классификатор обращений технической поддержки.
 
-Вместо low используй подходящее значение: low, normal или high.
+Определи приоритет обращения по следующим правилам:
 
-Текст заявки:
-{$comment}
+- low — общий вопрос, консультация или незначительная проблема,
+  которая не мешает основной работе пользователя.
+- normal — проблема с отдельной функцией или сервисом,
+  которая мешает работе одного пользователя.
+- high — массовый сбой, недоступность критически важного сервиса,
+  потеря данных или угроза безопасности.
+
+Если масштаб проблемы неизвестен, не считай её массовой.
+
+Верни строго JSON без Markdown и дополнительных пояснений:
+{"priority":"normal"}
+
+Допустимые значения priority: low, normal, high.
 PROMPT;
 
     $payload = [
-        'contents' => [
+        'model' => $model,
+        'messages' => [
             [
-                'parts' => [
-                    ['text' => $prompt]
-                ]
+                'role' => 'system',
+                'content' => $systemPrompt
+            ],
+            [
+                'role' => 'user',
+                'content' => "Текст обращения клиента:\n" . $comment
             ]
         ],
-        'generationConfig' => [
-            'responseMimeType' => 'application/json',
-            'responseSchema' => [
-                'type' => 'OBJECT',
-                'properties' => [
-                    'priority' => [
-                        'type' => 'STRING',
-                        'enum' => ['low', 'normal', 'high']
-                    ]
-                ],
-                'required' => ['priority']
-            ]
-        ]
+        'temperature' => 0,
+        'max_tokens' => 50,
+        'stream' => false
     ];
 
     try {
-        $ch = curl_init($url);
+        $ch = curl_init($apiUrl);
 
         curl_setopt_array($ch, [
             CURLOPT_POST => true,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
-                'x-goog-api-key: ' . $apiKey
+                'Accept: application/json',
+                'Authorization: Api-Key ' . $apiKey,
+                'OpenAI-Project: ' . $folderId
             ],
             CURLOPT_POSTFIELDS => json_encode(
                 $payload,
                 JSON_UNESCAPED_UNICODE
             ),
             CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_TIMEOUT => 20,
+            CURLOPT_TIMEOUT => 60,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2
         ]);
@@ -79,7 +88,7 @@ PROMPT;
 
         if ($response === false || $httpCode !== 200) {
             error_log(
-                'Gemini API error. HTTP: ' . $httpCode .
+                'Yandex AI API error. HTTP: ' . $httpCode .
                 '. cURL: ' . $curlError
             );
 
@@ -88,23 +97,34 @@ PROMPT;
 
         $data = json_decode($response, true);
 
-        $text = $data['candidates'][0]['content']['parts'][0]['text'] ?? null;
+        $text = $data['choices'][0]['message']['content'] ?? null;
 
-        if (!$text) {
+        if (!is_string($text) || trim($text) === '') {
+            error_log('Yandex AI: Empty model response.');
             return 'normal';
         }
 
-        $result = json_decode($text, true);
+        $result = json_decode(trim($text), true);
+
+        // Дополнительная обработка JSON, обёрнутого в Markdown.
+        if (!is_array($result)) {
+            if (preg_match('/\{.*\}/s', $text, $matches)) {
+                $result = json_decode($matches[0], true);
+            }
+        }
+
         $priority = $result['priority'] ?? null;
 
         if (in_array($priority, ['low', 'normal', 'high'], true)) {
             return $priority;
         }
 
+        error_log('Yandex AI: Invalid priority response.');
+
         return 'normal';
 
     } catch (Throwable $e) {
-        error_log('Gemini API error: ' . $e->getMessage());
+        error_log('Yandex AI exception: ' . $e->getMessage());
 
         return 'normal';
     }

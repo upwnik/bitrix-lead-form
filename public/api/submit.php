@@ -118,7 +118,7 @@ try {
 
     $leadId = (int) $pdo->lastInsertId();
 
-    // 2. Анализируем заявку через Gemini
+    // 2. Анализируем заявку через YandexGPT
     $priority = analyzeLeadPriority($comment);
 
     $updatePriority = $pdo->prepare(
@@ -135,7 +135,8 @@ try {
         'name' => $name,
         'phone' => $phone,
         'email' => $email,
-        'comment' => $comment
+        'comment' => $comment,
+        'priority' => $priority
     ]);
 
     if ($bitrixResult['success']) {
